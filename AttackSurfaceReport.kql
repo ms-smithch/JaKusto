@@ -1,0 +1,41 @@
+//Creates Reference table of all device information
+let DeviceReference = DeviceInfo
+| distinct DeviceName,LoggedOnUsers,DeviceId
+| mv-expand parsejson(LoggedOnUsers)
+| extend User = tostring(LoggedOnUsers.UserName)
+| project DeviceId, User
+|join kind = inner (
+DeviceNetworkInfo
+| distinct DeviceName,DeviceId,IPAddresses
+| where IPAddresses !contains "LinkLocal"
+) on $left.DeviceId == $right.DeviceId
+| project DeviceId,User,DeviceName,IPAddresses;
+//Pulls vulnerability information
+let VulnerabilityAssessment = DeviceTvmSoftwareVulnerabilities
+| project DeviceId,SoftwareName,CveId,VulnerabilitySeverityLevel,OSPlatform
+| join kind = inner (
+DeviceTvmSoftwareVulnerabilitiesKB
+| project CveId,CvssScore
+) on $left.CveId == $right.CveId
+| extend Type = tostring("Vulnerability") //added for clarification of assessment type
+| project DeviceId,OSPlatform,SoftwareName,CveId,CvssScore,VulnerabilitySeverityLevel,Type;
+//Pulls Configuration information and normalizes to match Vulnerability data 
+let ConfigurationAssessment = DeviceTvmSecureConfigurationAssessment
+| extend CveId = ConfigurationId
+| extend CvssScore = ConfigurationImpact 
+| project DeviceId,CveId,CvssScore,OSPlatform
+| join kind = inner (
+DeviceTvmSecureConfigurationAssessmentKB
+| extend SoftwareName = ConfigurationName
+| project ConfigurationId,SoftwareName
+) on $left.CveId == $right.ConfigurationId
+| extend Type = tostring("Configuration"),//added for clarification of assessment type
+//Added for Scoring ADJUST ACCORDING TO YOUR OWN RISK LEVELS
+    VulnerabilitySeverityLevel = case(CvssScore < 4, "Low",CvssScore > 6, "High", "Medium")
+| project DeviceId,CveId,CvssScore,SoftwareName,OSPlatform,VulnerabilitySeverityLevel,Type;
+// combines our tables 
+let Report = VulnerabilityAssessment
+| union ConfigurationAssessment;
+DeviceReference
+| join Report on DeviceId
+| project IPAddresses,DeviceName,User,SoftwareName,CveId,CvssScore,VulnerabilitySeverityLevel,OSPlatform,Type
